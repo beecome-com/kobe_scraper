@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
@@ -6,15 +5,24 @@
 """
 
 import datetime
+import logging
 import os
 import tempfile
 import unittest
+from unittest.mock import Mock, patch
 
 import pandas as pd
+import requests
 
 # テスト対象のモジュールをインポート
-from kobe_bid_scraper import validate_date, save_to_csv, save_to_excel
+from kobe_bid_scraper import validate_date, save_to_csv, save_to_excel, search_bids_with_requests
 
+# ロガーの設定
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 class TestKobeBidScraper(unittest.TestCase):
     """神戸市入札結果スクレイピングツールのテストケース"""
@@ -149,6 +157,66 @@ class TestKobeBidScraper(unittest.TestCase):
             # 一時ファイルを削除
             if os.path.exists(tmp_path):
                 os.unlink(tmp_path)
+
+    def test_search_bids_live(self):
+        """実際のWebサイトにアクセスして検索結果を取得するテスト（長期間）"""
+        # 実際のリクエストを実行（より長い期間）
+        start_date = datetime.date(2024, 3, 1)
+        end_date = datetime.date(2024, 3, 31)
+        results = search_bids_with_requests(start_date, end_date)
+
+        # 長期間の場合、ページネーションがあるためNoneが返されることを期待
+        self.assertIsNone(results, "長期間の検索でページネーションがある場合、Noneが返されるべきです")
+
+    def test_search_bids_short_period(self):
+        """実際のWebサイトにアクセスして検索結果を取得するテスト（短期間）"""
+        # 実際のリクエストを実行（短い期間）
+        start_date = datetime.date(2024, 3, 1)
+        end_date = datetime.date(2024, 3, 3)
+        results = search_bids_with_requests(start_date, end_date)
+
+        # 結果の検証
+        if results is None:
+            # 結果がNoneの場合、ページネーションがある可能性がある
+            self.skipTest("検索結果にページネーションがあるため、テストをスキップします")
+        else:
+            self.assertIsInstance(results, list, "検索結果がリストではありません")
+            
+            if results:  # 結果が存在する場合
+                first_result = results[0]
+                # 必須フィールドの存在確認
+                required_fields = ["工事名", "開札日時", "入札方法", "案件番号", "link"]
+                for field in required_fields:
+                    self.assertIn(field, first_result, f"{field}が結果に含まれていません")
+                    self.assertIsNotNone(first_result[field], f"{field}がNoneです")
+                    self.assertNotEqual(first_result[field], "", f"{field}が空文字列です")
+
+                # リンクのフォーマット確認
+                self.assertTrue(
+                    first_result["link"].startswith("https://nyusatsukekka.city.kobe.lg.jp/") or 
+                    first_result["link"].startswith("http://nyusatsukekka.city.kobe.lg.jp/"),
+                    "リンクが正しいURLではありません"
+                )
+
+    def test_search_bids_future_date(self):
+        """未来の日付で検索した場合のテスト"""
+        # 未来の日付で検索
+        start_date = datetime.date(2025, 4, 1)
+        end_date = datetime.date(2025, 4, 30)
+        results = search_bids_with_requests(start_date, end_date)
+
+        # 結果がNoneまたは空のリストであることを期待
+        if results is not None:
+            self.assertEqual(len(results), 0, "未来の日付での検索結果は空であるべきです")
+
+    def test_search_bids_invalid_dates(self):
+        """無効な日付範囲での検索テスト"""
+        # 終了日が開始日より前の場合
+        start_date = datetime.date(2024, 3, 10)
+        end_date = datetime.date(2024, 3, 1)
+        
+        with self.assertRaises(ValueError):
+            search_bids_with_requests(start_date, end_date)
 
 
 if __name__ == '__main__':

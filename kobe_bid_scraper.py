@@ -91,6 +91,7 @@ def setup_selenium() -> Tuple:
             from selenium.webdriver.common.by import By
             from selenium.webdriver.support import expected_conditions as EC
             from selenium.webdriver.support.ui import Select, WebDriverWait
+            from selenium.common.exceptions import TimeoutException
             
             try:
                 from webdriver_manager.chrome import ChromeDriverManager
@@ -111,6 +112,7 @@ def setup_selenium() -> Tuple:
         from selenium.webdriver.common.by import By
         from selenium.webdriver.support import expected_conditions as EC
         from selenium.webdriver.support.ui import Select, WebDriverWait
+        from selenium.common.exceptions import TimeoutException
         
         try:
             from webdriver_manager.chrome import ChromeDriverManager
@@ -120,22 +122,40 @@ def setup_selenium() -> Tuple:
     
     # Chrome オプション設定
     chrome_options = Options()
-    chrome_options.add_argument("--headless")  # ヘッドレスモード
+    chrome_options.add_argument("--headless=new")  # 新しいヘッドレスモード
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--disable-gpu")
     chrome_options.add_argument("--window-size=1920,1080")
+    chrome_options.add_argument("--disable-extensions")
+    chrome_options.add_argument("--disable-popup-blocking")
+    chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+    chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    chrome_options.add_experimental_option("useAutomationExtension", False)
     
-    # WebDriver 設定
-    if has_webdriver_manager:
-        service = Service(ChromeDriverManager().install())
-        driver = webdriver.Chrome(service=service, options=chrome_options)
-        logger.debug("ChromeDriverをwebdriver-managerで自動インストールしました")
-    else:
-        driver = webdriver.Chrome(options=chrome_options)
-        logger.debug("既存のChromeDriverを使用します")
+    try:
+        # WebDriver 設定
+        if has_webdriver_manager:
+            service = Service(ChromeDriverManager().install())
+            driver = webdriver.Chrome(service=service, options=chrome_options)
+            logger.debug("ChromeDriverをwebdriver-managerで自動インストールしました")
+        else:
+            driver = webdriver.Chrome(options=chrome_options)
+            logger.debug("既存のChromeDriverを使用します")
+        
+        # ページの読み込みタイムアウトを設定
+        driver.set_page_load_timeout(30)
+        
+        # User-Agentを設定
+        driver.execute_cdp_cmd("Network.setUserAgentOverride", {
+            "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
+        })
+        
+        return (driver, By, WebDriverWait, EC, Select)
     
-    return (driver, By, WebDriverWait, EC, Select)
+    except Exception as e:
+        logger.error(f"ChromeDriverの設定に失敗しました: {e}")
+        raise
 
 
 def setup_gspread() -> Tuple:
@@ -202,7 +222,19 @@ def search_bids_with_requests(start_date: datetime.date, end_date: datetime.date
     Returns:
         検索結果のリスト（失敗した場合はNone）
     """
-    url = "https://nyusatsukekka.city.kobe.lg.jp/searchk.php"
+
+    s = requests.Session()                
+    s.headers.update({
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/123.0.0.0 Safari/537.36"
+        ),
+        "Referer": "https://nyusatsukekka.city.kobe.lg.jp/searchk.php",
+    })
+    s.get("https://nyusatsukekka.city.kobe.lg.jp/searchk.php", timeout=15)
+
+    url = "https://nyusatsukekka.city.kobe.lg.jp/resultsk.php"
     
     # 年月日を個別に取得
     start_year = start_date.year
@@ -215,26 +247,33 @@ def search_bids_with_requests(start_date: datetime.date, end_date: datetime.date
     
     # POSTパラメータ作成
     params = {
-        "syumoku": "1",  # 工事
-        "startYY": str(start_year),
-        "startMM": str(start_month),
-        "startDD": str(start_day),
-        "endYY": str(end_year),
-        "endMM": str(end_month),
-        "endDD": str(end_day),
-        "kouji": "",  # 工事名
-        "nyusatsu_1": "on",  # 一般競争入札
-        "nyusatsu_2": "on",  # 制限付一般競争入札
-        "nyusatsu_3": "on",  # 指名競争入札
-        "kingakuStart": "",  # 金額下限
-        "kingakuEnd": "",  # 金額上限
+        "fromyy": f"{start_date.year}",
+        "frommm": f"{start_date.month:02}",
+        "fromdd": f"{start_date.day:02}",
+        "toyy"  : f"{end_date.year}",
+        "tomm"  : f"{end_date.month:02}",
+        "todd"  : f"{end_date.day:02}",
+        "koujimei": "",  # 工事名
+        "nyusatsu1": "一般競争入札",
+        "nyusatsu2": "指名競争入札",
+        "nyusatsu3": "制限付一般競争入札",
+        "fromkin": "",  # 金額下限
+        "tokin": "",  # 金額上限
         "anken": "",  # 案件番号
-        "searchk": "検索実行",
+    }
+    headers = {
+        "Referer": "https://nyusatsukekka.city.kobe.lg.jp/searchk.php",
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0.0.0 Safari/537.36"
+        )
     }
     
     try:
-        response = requests.post(url, data=params)
+        response = s.post(url, data=params,timeout=15)
         response.raise_for_status()
+        response.encoding = "cp932" 
         
         # レスポンスをパース
         soup = BeautifulSoup(response.text, "html.parser")
@@ -295,116 +334,156 @@ def search_bids_with_requests(start_date: datetime.date, end_date: datetime.date
         return None
 
 
+def get_onclick_url(onclick_text: str) -> Optional[str]:
+    """JavaScriptのonclickイベントからURLを抽出します"""
+    try:
+        # onclick="window.open('resultk.php?xxx')" のようなパターンを処理
+        match = re.search(r"window\.open\('([^']+)'\)", onclick_text)
+        if match:
+            return match.group(1)
+        return None
+    except:
+        return None
+
+
+def extract_link_from_cell(cell) -> Optional[str]:
+    """セルからリンクを抽出します"""
+    try:
+        links = cell.find_elements(By.TAG_NAME, "a")
+        for link in links:
+            # まずhref属性をチェック
+            href = link.get_attribute("href")
+            if href and "resultk.php" in href:
+                return href
+            
+            # onclick属性をチェック
+            onclick = link.get_attribute("onclick")
+            if onclick:
+                url = get_onclick_url(onclick)
+                if url:
+                    return url
+        return None
+    except:
+        return None
+
+
 def search_bids_with_selenium(start_date: datetime.date, end_date: datetime.date) -> List[Dict]:
-    """Seleniumを使用して入札結果を検索します
-
-    Args:
-        start_date: 検索開始日
-        end_date: 検索終了日
-
-    Returns:
-        検索結果のリスト
-    """
+    """Seleniumを使用して入札結果を検索します"""
     driver, By, WebDriverWait, EC, Select = setup_selenium()
     url = "https://nyusatsukekka.city.kobe.lg.jp/searchk.php"
+    results = []
     
     try:
         driver.get(url)
         logger.debug(f"URL {url} にアクセスしました")
         
-        # 工事タブが選択されていることを確認
+        # フォームが読み込まれるまで待機
         wait = WebDriverWait(driver, 10)
-        kouji_tab = wait.until(EC.element_to_be_clickable((By.XPATH, "//div[contains(text(), '工 事')]")))
+        wait.until(EC.presence_of_element_located((By.TAG_NAME, "form")))
         
-        if "active" not in kouji_tab.get_attribute("class"):
-            kouji_tab.click()
-            logger.debug("工事タブをクリックしました")
+        # 日付入力
+        Select(driver.find_element(By.NAME, "fromyy")).select_by_value(str(start_date.year))
+        Select(driver.find_element(By.NAME, "frommm")).select_by_value(str(start_date.month).zfill(2))
+        Select(driver.find_element(By.NAME, "fromdd")).select_by_value(str(start_date.day).zfill(2))
         
-        # 開始日の入力
-        start_year_select = Select(driver.find_element(By.NAME, "startYY"))
-        start_year_select.select_by_value(str(start_date.year))
+        Select(driver.find_element(By.NAME, "toyy")).select_by_value(str(end_date.year))
+        Select(driver.find_element(By.NAME, "tomm")).select_by_value(str(end_date.month).zfill(2))
+        Select(driver.find_element(By.NAME, "todd")).select_by_value(str(end_date.day).zfill(2))
         
-        start_month_select = Select(driver.find_element(By.NAME, "startMM"))
-        start_month_select.select_by_value(str(start_date.month))
+        # 入札方式のチェックボックスを選択
+        for checkbox_name in ["nyusatsu1", "nyusatsu2", "nyusatsu3"]:
+            try:
+                checkbox = driver.find_element(By.NAME, checkbox_name)
+                if not checkbox.is_selected():
+                    checkbox.click()
+            except:
+                continue
         
-        start_day_select = Select(driver.find_element(By.NAME, "startDD"))
-        start_day_select.select_by_value(str(start_date.day))
-        
-        # 終了日の入力
-        end_year_select = Select(driver.find_element(By.NAME, "endYY"))
-        end_year_select.select_by_value(str(end_date.year))
-        
-        end_month_select = Select(driver.find_element(By.NAME, "endMM"))
-        end_month_select.select_by_value(str(end_date.month))
-        
-        end_day_select = Select(driver.find_element(By.NAME, "endDD"))
-        end_day_select.select_by_value(str(end_date.day))
-        
-        # 入札方式のチェックボックスをすべて選択
-        for i in range(1, 4):  # 1から3まで (一般、制限付一般、指名)
-            checkbox = driver.find_element(By.NAME, f"nyusatsu_{i}")
-            if not checkbox.is_selected():
-                checkbox.click()
-        
-        # 検索実行ボタンをクリック
-        search_button = driver.find_element(By.XPATH, "//input[@value='検索実行']")
+        # 検索実行
+        search_button = driver.find_element(By.XPATH, "//input[@type='submit'][@value='検索実行']")
         search_button.click()
+        logger.debug("検索ボタンをクリックしました")
+        time.sleep(2)  # 結果の読み込みを待機
         
-        # 結果を取得
-        results = []
         page_num = 1
-        
         while True:
             logger.info(f"検索結果ページ {page_num} を処理中...")
             
-            # テーブルが読み込まれるまで待機
-            wait.until(EC.presence_of_element_located((By.CLASS_NAME, "kekka")))
-            
-            # 結果テーブルを取得
-            result_table = driver.find_element(By.CLASS_NAME, "kekka")
-            rows = result_table.find_elements(By.TAG_NAME, "tr")[1:]  # ヘッダー行をスキップ
-            
-            for row in rows:
-                cols = row.find_elements(By.TAG_NAME, "td")
-                if len(cols) < 5:  # 最低5列あることを期待
-                    continue
+            # 検索結果テーブルを探す
+            try:
+                tables = driver.find_elements(By.TAG_NAME, "table")
+                result_table = None
                 
-                # リンク要素を取得
-                link_elem = cols[0].find_element(By.TAG_NAME, "a")
-                if not link_elem:
-                    continue
+                # 検索フォーム以外のテーブルを探す
+                for table in tables:
+                    if "base-table" not in (table.get_attribute("class") or ""):
+                        result_table = table
+                        break
                 
-                link = link_elem.get_attribute("href")
+                if not result_table:
+                    break
                 
-                # 基本情報を取得
-                bid_info = {
-                    "工事名": cols[0].text.strip(),
-                    "開札日時": cols[1].text.strip(),
-                    "入札方法": cols[2].text.strip(),
-                    "案件番号": cols[3].text.strip(),
-                    "link": link
-                }
+                logger.debug("結果テーブルを見つけました")
+                rows = result_table.find_elements(By.TAG_NAME, "tr")[1:]  # ヘッダーをスキップ
                 
-                results.append(bid_info)
-            
-            # 次ページがあるか確認
-            next_buttons = driver.find_elements(By.XPATH, "//a[contains(text(), '次へ') or contains(text(), '次ページ') or contains(text(), '>')]")
-            
-            if not next_buttons:
-                break  # 次ページがなければループ終了
-            
-            # 次ページをクリック
-            next_buttons[0].click()
-            page_num += 1
-            
-            # 次ページが読み込まれるまで少し待機
-            random_sleep()
+                for row in rows:
+                    try:
+                        cols = row.find_elements(By.TAG_NAME, "td")
+                        if len(cols) < 4:
+                            continue
+                        
+                        # リンクを探す
+                        link = extract_link_from_cell(cols[0])
+                        if not link:
+                            continue
+                        
+                        if not link.startswith("http"):
+                            link = f"https://nyusatsukekka.city.kobe.lg.jp/{link}"
+                        
+                        # データを取得
+                        bid_info = {
+                            "工事名": cols[0].text.strip(),
+                            "開札日時": cols[1].text.strip(),
+                            "入札方法": cols[2].text.strip(),
+                            "案件番号": cols[3].text.strip(),
+                            "link": link
+                        }
+                        
+                        if all(v.strip() for v in bid_info.values()):
+                            results.append(bid_info)
+                            logger.debug(f"入札情報を取得: {bid_info['工事名']}")
+                    
+                    except Exception as e:
+                        logger.debug(f"行の処理でエラー: {str(e)}")
+                        continue
+                
+                # 次ページの確認
+                try:
+                    next_links = driver.find_elements(By.XPATH, 
+                        "//a[contains(text(),'次へ') or contains(text(),'次ページ') or contains(text(),'>')]")
+                    if not next_links:
+                        break
+                    
+                    next_links[0].click()
+                    logger.debug("次ページをクリックしました")
+                    page_num += 1
+                    time.sleep(2)
+                except:
+                    break
+                
+            except Exception as e:
+                logger.error(f"ページの処理でエラー: {str(e)}")
+                break
         
-        logger.info(f"合計 {len(results)} 件の入札結果を取得しました")
+        if not results:
+            logger.warning("検索結果が0件でした")
+        else:
+            logger.info(f"合計 {len(results)} 件の入札結果を取得しました")
+        
         return results
     
     except Exception as e:
-        logger.error(f"Seleniumによる検索でエラーが発生しました: {e}")
+        logger.error(f"Seleniumによる検索でエラー: {str(e)}")
         raise
     
     finally:
