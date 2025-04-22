@@ -1,0 +1,28 @@
+Sub 分析開始()
+Dim bid_prace As Long
+Dim number_company As Long
+Dim result As Double
+Dim bid_prace_result As Double
+Dim database_sheet As Worksheet
+Dim home_sheet As Worksheet
+Set home_sheet = Worksheets("入札支援システム")
+Set database_sheet = Worksheets("データベース (電気工事)")
+bid_prace = home_sheet.Cells(7, 3).Value
+number_company = home_sheet.Cells(8, 3).Value
+result = Log(bid_prace)
+result = database_sheet.Cells(2, 16).Value * result
+result = result + database_sheet.Cells(2, 17).Value
+result = result + database_sheet.Cells(2, 19).Value * number_company
+bid_prace_result = result * bid_prace
+home_sheet.Cells(10, 3).Value = bid_prace_result
+
+Dim bid_margin As Double
+bid_margin = database_sheet.Cells(2, 18).Value
+home_sheet.Cells(12, 3).Value = bid_margin * bid_prace_result
+home_sheet.Cells(14, 3).Value = bid_prace_result + bid_margin * bid_prace_result
+home_sheet.Cells(16, 3).Value = database_sheet.Cells(2, 20).Value * 100
+home_sheet.Cells(10, 7).Value = database_sheet.Cells(2, 21).Value
+
+End Sub
+
+
